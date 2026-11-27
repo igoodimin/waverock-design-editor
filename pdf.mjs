@@ -89,8 +89,15 @@ export async function buildPdf(canvas, size, opts = {}) {
 
 // 화면(Fabric)이 계산한 줄바꿈과 글자 위치를 그대로 옮깁니다. 그래서 화면과 PDF의 줄이 똑같이 나뉩니다.
 function drawText(page, t, { font, outline }) {
-  const { color, alpha } = toRgb(t.fill);
-  const opacity = alpha * (t.opacity ?? 1);
+  // 글자마다 색이 다를 수 있어(부분 색), 같은 색은 한 번만 변환합니다.
+  const colors = new Map();
+  const paint = fill => {
+    if (!colors.has(fill)) {
+      const { color, alpha } = toRgb(fill);
+      colors.set(fill, { color, opacity: alpha * (t.opacity ?? 1) });
+    }
+    return colors.get(fill);
+  };
   let lineTop = -t.height / 2;
   for (let i = 0; i < t._textLines.length; i++) {
     const h = t.getHeightOfLineImpl(i);
@@ -101,6 +108,7 @@ function drawText(page, t, { font, outline }) {
       if (!ch.trim()) return;
       const b = bounds[k];
       const x = lineLeft + b.left + (b.kernedWidth - b.width);
+      const { color, opacity } = paint(t.getValueOfPropertyAt(i, k, 'fill'));
       if (font) {
         page.pushOperators(pushGraphicsState(), concatTransformationMatrix(1, 0, 0, -1, x, baseline));
         page.drawText(ch, { x: 0, y: 0, size: t.fontSize, font, color, opacity });

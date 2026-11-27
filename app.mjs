@@ -372,7 +372,36 @@ function drawWeights(family, weight) {
     `<option value="${w}"${Number(w) === Number(weight) ? ' selected' : ''}>${label}</option>`).join('');
 }
 
-const textPalette = palette($('p-color'), () => activeText()?.fill, c => { updateText({ fill: c }); });
+// 글자를 고치는 중에 끌어서 고른 부분. 없으면 null
+function textRange() {
+  const t = activeText();
+  if (!t?.isEditing || t.selectionStart === t.selectionEnd) return null;
+  return { t, start: Math.min(t.selectionStart, t.selectionEnd), end: Math.max(t.selectionStart, t.selectionEnd) };
+}
+const textPalette = palette($('p-color'), () => {
+  const r = textRange();
+  if (!r) return activeText()?.fill;
+  const { lineIndex, charIndex } = r.t.get2DCursorLocation(r.start);
+  return r.t.getValueOfPropertyAt(lineIndex, charIndex, 'fill');
+}, c => {
+  const r = textRange();
+  if (!r) {
+    // 글 전체 색을 바꾸면, 부분만 바꿨던 색도 함께 지웁니다.
+    activeText()?.removeStyle('fill');
+    updateText({ fill: c });
+    return;
+  }
+  state.pristine = false;
+  r.t.setSelectionStyles({ fill: c }, r.start, r.end);
+  r.t.hiddenTextarea?.focus();
+  canvas.requestRenderAll();
+  scheduleSave();
+});
+// 색 버튼을 눌러도 고른 글자가 풀리지 않게 합니다.
+$('p-color').addEventListener('mousedown', e => { if (e.target.closest('.sw')) e.preventDefault(); });
+canvas.on('text:selection:changed', () => textPalette.draw());
+canvas.on('text:editing:entered', () => textPalette.draw());
+canvas.on('text:editing:exited', () => textPalette.draw());
 const fillPalette = palette($('p-fill'), () => active()?.fill, c => {
   const o = active();
   if (!o?.isType('Path')) return;
