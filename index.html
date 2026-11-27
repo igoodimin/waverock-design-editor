@@ -19,11 +19,28 @@
   <div class="layout">
     <aside class="side">
       <section class="sec">
+        <div class="grid2">
+          <button type="button" id="undo" disabled title="되돌리기 (⌘Z)">↶ 되돌리기</button>
+          <button type="button" id="redo" disabled title="다시 하기 (⇧⌘Z)">↷ 다시 하기</button>
+        </div>
+      </section>
+
+      <section class="sec">
         <h2>용지</h2>
         <div class="seg" id="orientation">
           <button type="button" data-o="landscape" aria-pressed="true">A4 가로</button>
           <button type="button" data-o="portrait" aria-pressed="false">A4 세로</button>
         </div>
+        <button type="button" class="wide" id="a5" aria-pressed="false">✂ A5 두 장으로 나누기</button>
+        <div id="a5-tools" hidden>
+          <button type="button" class="wide" id="mirror">왼쪽 내용을 오른쪽에도 넣기</button>
+          <p class="hint">A4에 인쇄한 뒤 점선을 따라 자르면 A5 두 장이 됩니다. 점선은 PDF에도 들어갑니다.</p>
+        </div>
+      </section>
+
+      <section class="sec" id="tpl-sec" hidden>
+        <h2>템플릿</h2>
+        <div class="tpl-list" id="tpl-list"></div>
       </section>
 
       <section class="sec">
@@ -34,7 +51,10 @@
           <button type="button" data-preset="enTitle">영문 강조</button>
           <button type="button" data-preset="enBody">영문 설명</button>
         </div>
-        <button type="button" class="wide" id="add-image">＋ 사진 올리기</button>
+        <div class="grid2 add-more">
+          <button type="button" id="add-icon">＋ 아이콘</button>
+          <button type="button" id="add-image">＋ 사진</button>
+        </div>
         <input type="file" id="image-file" accept="image/png,image/jpeg,image/webp" hidden>
       </section>
 
@@ -66,6 +86,9 @@
             <div class="palette" id="p-color"></div>
           </div>
         </div>
+        <div id="fill-props" class="field">아이콘 색
+          <div class="palette" id="p-fill"></div>
+        </div>
         <div class="field obj-center">대지 가운데 맞춤
           <div class="grid2">
             <button type="button" id="c-x">가로 가운데</button>
@@ -78,6 +101,7 @@
           <button type="button" id="a-dup">복제</button>
           <button type="button" id="a-del" class="danger">삭제</button>
         </div>
+        <button type="button" class="wide" id="a-lock" aria-pressed="false">🔒 자리 고정</button>
       </section>
 
       <section class="sec">
@@ -89,6 +113,12 @@
         <h2>저장</h2>
         <button type="button" class="wide primary" id="save-pdf">PDF 저장</button>
         <p class="hint" id="save-hint">A4 · 글자는 벡터로 저장돼 인쇄해도 선명합니다.</p>
+        <div class="grid2 work">
+          <button type="button" id="save-work" title="나중에 이어서 고칠 수 있는 파일(.json)로 저장">작업 파일 저장</button>
+          <button type="button" id="open-work">작업 파일 열기</button>
+        </div>
+        <input type="file" id="work-file" accept=".json,application/json" hidden>
+        <button type="button" class="wide locked" id="save-feed" aria-disabled="true">🔒 인스타 피드 PNG</button>
         <button type="button" class="wide ghost" id="reset">새로 시작</button>
       </section>
     </aside>
@@ -101,12 +131,24 @@
     </main>
   </div>
 
-  <dialog class="confirm" id="reset-dialog">
+  <dialog class="picker" id="icon-dialog" aria-label="아이콘 고르기">
+    <div class="picker-head">
+      <h2>아이콘</h2>
+      <button type="button" class="x" id="icon-close" aria-label="닫기">✕</button>
+    </div>
+    <div class="picker-body">
+      <input type="search" id="icon-search" placeholder="찾기: 화장실, 금지, 와이파이…" autocomplete="off">
+      <div class="icon-grid" id="icon-grid"></div>
+      <p class="hint" id="icon-hint">자주 쓰는 아이콘입니다. 영어로 찾으면 3,900여 개 전체에서 찾습니다. 예) toilet, parking</p>
+    </div>
+  </dialog>
+
+  <dialog class="confirm" id="confirm">
     <form method="dialog">
-      <p>지금 작업한 내용을 모두 지우고 새로 시작할까요?<br>지운 내용은 되돌릴 수 없습니다.</p>
+      <p id="confirm-text"></p>
       <div class="grid2">
         <button value="cancel">취소</button>
-        <button value="ok" class="danger">지우고 새로 시작</button>
+        <button value="ok" class="danger" id="confirm-ok">확인</button>
       </div>
     </form>
   </dialog>

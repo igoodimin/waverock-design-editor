@@ -1,4 +1,4 @@
-import { Canvas, Textbox, FabricImage, InteractiveFabricObject, Control, cache } from './vendor/fabric.min.mjs';
+import { Canvas, Textbox, FabricImage, Path, InteractiveFabricObject, Control, cache } from './vendor/fabric.min.mjs';
 import { FONTS, nearestWeight, loadWebFont } from './fonts.mjs';
 import { buildPdf } from './pdf.mjs';
 
@@ -6,7 +6,7 @@ import { buildPdf } from './pdf.mjs';
 const SIZES = { portrait: { w: 595.28, h: 841.89 }, landscape: { w: 841.89, h: 595.28 } };
 // 처음 화면 배치가 바뀔 때마다 숫자를 올립니다. 이전 자동 저장은 무시하고 새 배치로 시작합니다.
 const STORE = 'wde-doc-v2';
-const EXTRA_PROPS = ['isPng'];
+const EXTRA_PROPS = ['isPng', 'iconName', 'wdeLock'];
 
 // 글 스타일 4가지. 스태프는 여기서 골라 시작합니다. width는 대지 폭에 대한 비율입니다.
 const PRESETS = {
@@ -20,8 +20,20 @@ const inkFor = (soft, bg) => (isDark(bg) ? (soft ? '#b3b3b3' : '#ffffff') : (sof
 const COLORS = ['#000000', '#ffffff', '#6b6b6b', '#d9d9d9', '#e1251b', '#ff7a00', '#ffd400', '#1f6feb', '#1a7f37'];
 
 const $ = id => document.getElementById(id);
-const state = { orientation: 'landscape' };
+const state = { orientation: 'landscape', a5: false, pristine: false };
 const size = () => SIZES[state.orientation];
+
+// A5 두 장 모드면 대지를 반으로 나눈 두 칸, 아니면 대지 전체 한 칸을 돌려줍니다.
+// 가로 A4는 왼쪽·오른쪽(세로형 A5 두 장), 세로 A4는 위·아래(가로형 A5 두 장)로 나뉩니다.
+function regions() {
+  const { w, h } = size();
+  if (!state.a5) return [{ x: 0, y: 0, w, h }];
+  return state.orientation === 'landscape'
+    ? [{ x: 0, y: 0, w: w / 2, h }, { x: w / 2, y: 0, w: w / 2, h }]
+    : [{ x: 0, y: 0, w, h: h / 2 }, { x: 0, y: h / 2, w, h: h / 2 }];
+}
+const regionIndex = pt => Math.max(0, regions().findIndex(r => pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h));
+const regionAt = pt => regions()[regionIndex(pt)];
 
 // 선택 테두리와 손잡이를 툴 UI 색에 맞춥니다.
 Object.assign(InteractiveFabricObject.ownDefaults, {
@@ -60,18 +72,86 @@ async function ensureFonts(objs) {
   canvas.requestRenderAll();
 }
 
-// ── 자동 저장 ──
+// ── 자동 저장과 되돌리기 ──
+// 작업 상태 전체(용지, A5 여부, 요소)를 글자로 묶어 브라우저에 저장하고, 되돌리기 기록에도 씁니다.
+const snapshot = () => JSON.stringify({ v: 2, orientation: state.orientation, a5: state.a5, pristine: state.pristine, canvas: canvas.toObject(EXTRA_PROPS) });
+const history = { stack: [], index: -1 };
+let restoring = false;
 let saveTimer;
-function scheduleSave() {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    try {
-      localStorage.setItem(STORE, JSON.stringify({ v: 1, orientation: state.orientation, pristine: !!state.pristine, canvas: canvas.toObject(EXTRA_PROPS) }));
-    } catch {
-      status('사진이 많아 브라우저 자동 저장 공간이 가득 찼어요. PDF로 먼저 저장해 두세요.', true);
-    }
-  }, 400);
+
+function persist(snap) {
+  try {
+    localStorage.setItem(STORE, snap);
+  } catch {
+    status('사진이 많아 브라우저 자동 저장 공간이 가득 찼어요. 작업 파일로 저장해 두세요.', true);
+  }
 }
+function record() {
+  const snap = snapshot();
+  if (snap !== history.stack[history.index]) {
+    history.stack = history.stack.slice(0, history.index + 1);
+    history.stack.push(snap);
+    if (history.stack.length > 60) history.stack.shift();
+    history.index = history.stack.length - 1;
+  }
+  persist(snap);
+  drawUndo();
+}
+function scheduleSave() {
+  if (restoring) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(record, 400);
+}
+function flushSave() {
+  if (!saveTimer) return;
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  record();
+}
+function drawUndo() {
+  $('undo').disabled = history.index <= 0;
+  $('redo').disabled = history.index >= history.stack.length - 1;
+}
+
+async function restore(snap) {
+  const d = JSON.parse(snap);
+  restoring = true;
+  try {
+    canvas.discardActiveObject();
+    state.orientation = d.orientation || 'landscape';
+    state.a5 = !!d.a5;
+    state.pristine = !!d.pristine;
+    await canvas.loadFromJSON(d.canvas);
+    canvas.getObjects().forEach(attachControls);
+    await ensureFonts(canvas.getObjects());
+    drawPaper();
+    fit();
+    bgPalette.draw();
+    showProps();
+    canvas.requestRenderAll();
+  } finally {
+    restoring = false;
+  }
+}
+async function undo() {
+  flushSave();
+  if (history.index <= 0) return;
+  history.index--;
+  await restore(history.stack[history.index]);
+  persist(history.stack[history.index]);
+  drawUndo();
+}
+async function redo() {
+  flushSave();
+  if (history.index >= history.stack.length - 1) return;
+  history.index++;
+  await restore(history.stack[history.index]);
+  persist(history.stack[history.index]);
+  drawUndo();
+}
+$('undo').addEventListener('click', undo);
+$('redo').addEventListener('click', redo);
+
 canvas.on('object:modified', scheduleSave);
 // 처음 예시를 아직 손대지 않았는지 기억합니다. 손대기 전이면 용지 방향을 바꿀 때 그 방향의 예시로 바꿔 보여 줍니다.
 ['object:modified', 'text:changed'].forEach(ev => canvas.on(ev, () => { state.pristine = false; }));
@@ -98,7 +178,19 @@ const deleteControl = new Control({
     ctx.restore();
   },
 });
-canvas.on('object:added', ({ target }) => { target.controls = { ...target.controls, del: deleteControl }; });
+function attachControls(o) {
+  o.controls = { ...o.controls, del: deleteControl };
+  // 아이콘은 비율이 깨지지 않게 모서리 손잡이로만 크기를 바꿉니다.
+  if (o.isType('Path')) o.setControlsVisibility({ mt: false, mb: false, ml: false, mr: false });
+  applyLock(o);
+}
+// 자리 고정: 옮기기·크기·회전·지우기를 막습니다. 글 내용과 색은 그대로 고칠 수 있습니다.
+function applyLock(o) {
+  const l = !!o.wdeLock;
+  o.set({ lockMovementX: l, lockMovementY: l, lockScalingX: l, lockScalingY: l, lockRotation: l });
+  o.setControlVisible('del', !l);
+}
+canvas.on('object:added', ({ target }) => attachControls(target));
 
 // 글을 모두 지우고 편집을 마치면 빈 글상자도 함께 지웁니다.
 canvas.on('text:editing:exited', ({ target }) => {
@@ -114,12 +206,17 @@ canvas.on('object:removed', scheduleSave);
 canvas.on('text:changed', scheduleSave);
 
 // ── 요소 추가 ──
-function makeText(key, top) {
+// 칸 모양(가로형/세로형)에 맞는 기본 크기를 씁니다. A5 칸은 A4 기준 크기를 칸 폭 비율만큼 줄입니다.
+function makeText(key, region = regions()[0], dy = 0) {
   const { text, width, soft, ...p } = PRESETS[key];
-  const { w, h } = size();
+  const tall = region.h > region.w;
+  const { key: _k, dy: _d, ...over } = STARTER[tall ? 'portrait' : 'landscape'].find(x => x.key === key) || {};
+  const k = region.w / (tall ? SIZES.portrait.w : SIZES.landscape.w);
+  const fontSize = Math.round((over.fontSize ?? p.fontSize) * k * 10) / 10;
   return new Textbox(text, {
-    ...p, width: w * width, fill: inkFor(soft, canvas.backgroundColor), textAlign: 'center',
-    originX: 'center', originY: 'center', left: w / 2, top: top ?? h / 2,
+    ...p, ...over, fontSize, width: region.w * width,
+    fill: over.fill ?? inkFor(soft, canvas.backgroundColor), textAlign: 'center',
+    originX: 'center', originY: 'center', left: region.x + region.w / 2, top: region.y + region.h / 2 + dy * k,
   });
 }
 
@@ -146,9 +243,9 @@ async function addImage(file) {
   c.getContext('2d').drawImage(bitmap, 0, 0, c.width, c.height);
   const url = c.toDataURL(isPng ? 'image/png' : 'image/jpeg', 0.92);
   const img = await FabricImage.fromURL(url);
-  const { w, h } = size();
-  const scale = Math.min((w * 0.6) / img.width, (h * 0.4) / img.height);
-  img.set({ isPng, scaleX: scale, scaleY: scale, originX: 'center', originY: 'center', left: w / 2, top: h / 2 });
+  const r = regions()[0];
+  const scale = Math.min((r.w * 0.6) / img.width, (r.h * 0.4) / img.height);
+  img.set({ isPng, scaleX: scale, scaleY: scale, originX: 'center', originY: 'center', left: r.x + r.w / 2, top: r.y + r.h / 2 });
   canvas.add(img);
   canvas.setActiveObject(img);
   canvas.requestRenderAll();
@@ -162,6 +259,60 @@ $('image-file').addEventListener('change', async e => {
   if (!file) return;
   try { await addImage(file); } catch { status('사진을 열지 못했어요. JPG나 PNG 파일인지 확인해 주세요.', true); }
 });
+
+// ── 아이콘 (Material Symbols Sharp) ──
+let curated = [];
+let allIcons = null;
+const iconSvg = d => `<svg viewBox="0 -960 960 960" aria-hidden="true"><path d="${d}"/></svg>`;
+function drawIcons(list, hint) {
+  $('icon-grid').innerHTML = list.map(({ name, ko, d }) =>
+    `<button type="button" data-name="${name}" title="${ko || name}">${iconSvg(d)}<span>${(ko || name).split(' ')[0]}</span></button>`).join('')
+    || '<p class="hint">찾는 아이콘이 없어요. 다른 말로 찾아 보세요.</p>';
+  $('icon-hint').textContent = hint;
+}
+const CURATED_HINT = '자주 쓰는 아이콘입니다. 영어로 찾으면 3,900여 개 전체에서 찾습니다. 예) toilet, parking';
+$('add-icon').addEventListener('click', async () => {
+  if (!curated.length) curated = await (await fetch('icons/curated.json')).json();
+  $('icon-search').value = '';
+  drawIcons(curated, CURATED_HINT);
+  $('icon-dialog').showModal();
+  $('icon-search').focus();
+});
+$('icon-close').addEventListener('click', () => $('icon-dialog').close());
+$('icon-dialog').addEventListener('click', e => { if (e.target === $('icon-dialog')) $('icon-dialog').close(); });
+let searchTimer;
+$('icon-search').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(async () => {
+    const q = $('icon-search').value.trim().toLowerCase();
+    if (!q) { drawIcons(curated, CURATED_HINT); return; }
+    const mine = curated.filter(i => i.ko.includes(q) || i.name.includes(q.replace(/\s+/g, '_')));
+    if (/[가-힣]/.test(q)) { drawIcons(mine, `자주 쓰는 아이콘에서 ${mine.length}개를 찾았어요.`); return; }
+    allIcons ??= await (await fetch('icons/all.json')).json();
+    const key = q.replace(/\s+/g, '_');
+    const more = Object.keys(allIcons).filter(n => n.includes(key) && !mine.some(m => m.name === n)).slice(0, 150)
+      .map(name => ({ name, d: allIcons[name] }));
+    drawIcons([...mine, ...more], `전체 아이콘에서 ${mine.length + more.length}개를 찾았어요.`);
+  }, 150);
+});
+$('icon-grid').addEventListener('click', e => {
+  const b = e.target.closest('button[data-name]');
+  if (!b) return;
+  const name = b.dataset.name;
+  const d = curated.find(i => i.name === name)?.d || allIcons?.[name];
+  $('icon-dialog').close();
+  addIcon(name, d);
+});
+function addIcon(name, d) {
+  state.pristine = false;
+  const r = regions()[0];
+  const icon = new Path(d, { fill: inkFor(false, canvas.backgroundColor), iconName: name, originX: 'center', originY: 'center' });
+  const k = (r.w / SIZES.landscape.w) * 96 / Math.max(icon.width, icon.height); // A4 가로 기준 약 34mm
+  icon.set({ scaleX: k, scaleY: k, left: r.x + r.w / 2, top: r.y + r.h / 2 });
+  canvas.add(icon);
+  canvas.setActiveObject(icon);
+  canvas.requestRenderAll();
+}
 
 // ── 색 팔레트 ──
 const RECENT = 'wde-recent-colors';
@@ -222,6 +373,14 @@ function drawWeights(family, weight) {
 }
 
 const textPalette = palette($('p-color'), () => activeText()?.fill, c => { updateText({ fill: c }); });
+const fillPalette = palette($('p-fill'), () => active()?.fill, c => {
+  const o = active();
+  if (!o?.isType('Path')) return;
+  state.pristine = false;
+  o.set({ fill: c });
+  canvas.requestRenderAll();
+  scheduleSave();
+});
 
 function showProps() {
   const o = active();
@@ -229,6 +388,11 @@ function showProps() {
   if (!o) return;
   const t = activeText();
   $('text-props').hidden = !t;
+  $('fill-props').hidden = !o.isType('Path');
+  $('a-lock').hidden = o.isType('ActiveSelection');
+  $('a-lock').setAttribute('aria-pressed', String(!!o.wdeLock));
+  $('a-lock').textContent = o.wdeLock ? '🔓 고정 풀기' : '🔒 자리 고정';
+  if (o.isType('Path')) fillPalette.draw();
   if (t) {
     $('p-font').value = t.fontFamily;
     drawWeights(t.fontFamily, t.fontWeight);
@@ -290,6 +454,16 @@ canvas.on('object:modified', ({ target }) => {
 $('a-front').addEventListener('click', () => { const o = active(); if (o) { canvas.bringObjectForward(o); canvas.requestRenderAll(); scheduleSave(); } });
 $('a-back').addEventListener('click', () => { const o = active(); if (o) { canvas.sendObjectBackwards(o); canvas.requestRenderAll(); scheduleSave(); } });
 $('a-dup').addEventListener('click', duplicate);
+$('a-lock').addEventListener('click', () => {
+  const o = active();
+  if (!o || o.isType('ActiveSelection')) return;
+  o.wdeLock = !o.wdeLock;
+  applyLock(o);
+  state.pristine = false;
+  showProps();
+  canvas.requestRenderAll();
+  scheduleSave();
+});
 
 // ── 글 한 번 클릭으로 바로 고치기 ──
 // 끌거나 크기를 바꾸지 않고 클릭만 했다면, 클릭한 자리에 글 커서를 놓습니다.
@@ -310,9 +484,9 @@ function centerActive(axis) {
   state.pristine = false;
   const o = active();
   if (!o) return;
-  const { w, h } = size();
   const c = o.getCenterPoint();
-  o.setPositionByOrigin({ x: axis === 'y' ? c.x : w / 2, y: axis === 'x' ? c.y : h / 2 }, 'center', 'center');
+  const r = regionAt(c); // A5 모드에서는 요소가 있는 칸의 가운데로 맞춥니다.
+  o.setPositionByOrigin({ x: axis === 'y' ? c.x : r.x + r.w / 2, y: axis === 'x' ? c.y : r.y + r.h / 2 }, 'center', 'center');
   o.setCoords();
   canvas.requestRenderAll();
   scheduleSave();
@@ -320,48 +494,84 @@ function centerActive(axis) {
 $('c-x').addEventListener('click', () => centerActive('x'));
 $('c-y').addEventListener('click', () => centerActive('y'));
 
-// 끌어서 옮길 때 대지 가운데 근처에 오면 자석처럼 붙고 안내선이 보입니다.
-const guides = { x: false, y: false };
+// 끌어서 옮길 때 대지(A5 모드면 칸) 가운데 근처에 오면 자석처럼 붙고 안내선이 보입니다.
+const guides = { x: null, y: null };
 canvas.on('object:moving', ({ target }) => {
-  const { w, h } = size();
   const snap = 8 / canvas.getZoom();
   const c = target.getCenterPoint();
-  guides.x = Math.abs(c.x - w / 2) < snap;
-  guides.y = Math.abs(c.y - h / 2) < snap;
-  if (guides.x || guides.y) {
-    target.setPositionByOrigin({ x: guides.x ? w / 2 : c.x, y: guides.y ? h / 2 : c.y }, 'center', 'center');
+  const xs = [...new Set(regions().map(r => r.x + r.w / 2))];
+  const ys = [...new Set(regions().map(r => r.y + r.h / 2))];
+  guides.x = xs.find(x => Math.abs(c.x - x) < snap) ?? null;
+  guides.y = ys.find(y => Math.abs(c.y - y) < snap) ?? null;
+  if (guides.x !== null || guides.y !== null) {
+    target.setPositionByOrigin({ x: guides.x ?? c.x, y: guides.y ?? c.y }, 'center', 'center');
   }
 });
-const hideGuides = () => { if (guides.x || guides.y) { guides.x = guides.y = false; canvas.requestRenderAll(); } };
-canvas.on('mouse:up', hideGuides);
+canvas.on('mouse:up', () => {
+  if (guides.x === null && guides.y === null) return;
+  guides.x = guides.y = null;
+  canvas.requestRenderAll();
+});
+let hideOverlay = false; // 그림 파일로 내보낼 때는 재단선과 안내선을 그리지 않습니다.
 canvas.on('after:render', ({ ctx }) => {
-  if (!guides.x && !guides.y) return;
+  if (hideOverlay) return;
   const z = canvas.getZoom();
   const { w, h } = size();
   ctx.save();
-  ctx.strokeStyle = '#ff3b8d';
   ctx.lineWidth = 1;
-  ctx.setLineDash([4, 4]);
-  ctx.beginPath();
-  if (guides.x) { ctx.moveTo(w / 2 * z + 0.5, 0); ctx.lineTo(w / 2 * z + 0.5, h * z); }
-  if (guides.y) { ctx.moveTo(0, h / 2 * z + 0.5); ctx.lineTo(w * z, h / 2 * z + 0.5); }
-  ctx.stroke();
+  // A5 재단선(화면 표시용)
+  if (state.a5) {
+    ctx.strokeStyle = '#8a8a8a';
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    if (state.orientation === 'landscape') { ctx.moveTo(w / 2 * z + 0.5, 0); ctx.lineTo(w / 2 * z + 0.5, h * z); }
+    else { ctx.moveTo(0, h / 2 * z + 0.5); ctx.lineTo(w * z, h / 2 * z + 0.5); }
+    ctx.stroke();
+  }
+  // 가운데 안내선
+  if (guides.x !== null || guides.y !== null) {
+    ctx.strokeStyle = '#ff3b8d';
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    const r = regionAt({ x: guides.x ?? w / 2, y: guides.y ?? h / 2 });
+    if (guides.x !== null) { ctx.moveTo(guides.x * z + 0.5, r.y * z); ctx.lineTo(guides.x * z + 0.5, (r.y + r.h) * z); }
+    if (guides.y !== null) { ctx.moveTo(r.x * z, guides.y * z + 0.5); ctx.lineTo((r.x + r.w) * z, guides.y * z + 0.5); }
+    ctx.stroke();
+  }
   ctx.restore();
 });
+
+// 재단선에 걸친 요소가 있으면 알려 줍니다. 자르면 그 요소가 잘립니다.
+function crossesCut(o) {
+  if (!state.a5) return false;
+  const b = o.getBoundingRect();
+  const { w, h } = size();
+  return state.orientation === 'landscape' ? (b.left < w / 2 && b.left + b.width > w / 2) : (b.top < h / 2 && b.top + b.height > h / 2);
+}
+function checkCut() {
+  const n = canvas.getObjects().filter(crossesCut).length;
+  if (n) status(`재단선에 걸친 요소가 ${n}개 있어요. 반으로 자르면 잘립니다.`, true);
+  else if ($('status').classList.contains('error') && $('status').textContent.startsWith('재단선')) status('');
+}
+canvas.on('object:modified', checkCut);
+
 $('a-del').addEventListener('click', removeActive);
 
 async function duplicate() {
   const o = active();
   if (!o || o.isType('ActiveSelection')) return;
   const c = await o.clone(EXTRA_PROPS);
-  c.set({ left: o.left + 12, top: o.top + 12 });
+  c.set({ left: o.left + 12, top: o.top + 12, wdeLock: false });
+  applyLock(c);
   canvas.add(c);
   canvas.setActiveObject(c);
   canvas.requestRenderAll();
 }
 function removeActive() {
   state.pristine = false;
-  const objs = canvas.getActiveObjects();
+  const all = canvas.getActiveObjects();
+  const objs = all.filter(o => !o.wdeLock);
+  if (objs.length < all.length) status('자리 고정한 요소는 지우지 않았어요. 고정을 풀면 지울 수 있어요.');
   objs.forEach(o => { if (o.isEditing) o.exitEditing(); });
   if (!objs.length) return;
   canvas.discardActiveObject();
@@ -371,6 +581,12 @@ function removeActive() {
 
 // 키보드: 지우기, 복제(⌘D), 화살표로 1pt씩(⇧ 누르면 10pt) 옮기기
 document.addEventListener('keydown', e => {
+  const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName) || active()?.isEditing;
+  if (!typing && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+    e.preventDefault();
+    if (e.shiftKey) redo(); else undo();
+    return;
+  }
   const o = active();
   if (!o || o.isEditing || /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName)) return;
   if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); removeActive(); return; }
@@ -379,6 +595,7 @@ document.addEventListener('keydown', e => {
   const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
   if (!d) return;
   e.preventDefault();
+  if (o.wdeLock) return;
   state.pristine = false;
   o.set({ left: o.left + d[0], top: o.top + d[1] });
   o.setCoords();
@@ -389,32 +606,73 @@ document.addEventListener('keydown', e => {
 // ── 용지 방향 ──
 function setOrientation(o) {
   if (o === state.orientation) return;
-  const before = size();
+  const before = regions();
+  const objs = canvas.getObjects();
+  const where = objs.map(obj => regionIndex(obj.getCenterPoint()));
   state.orientation = o;
   if (state.pristine) {
-    canvas.discardActiveObject();
-    canvas.remove(...canvas.getObjects());
+    drawPaper();
     fit();
-    starter().then(scheduleSave);
-    document.querySelectorAll('#orientation button').forEach(b => b.setAttribute('aria-pressed', b.dataset.o === o));
+    rebuildStarter();
     return;
   }
-  // 대지가 바뀌어도 내용이 가운데에 머물도록 함께 옮깁니다.
-  const dx = (size().w - before.w) / 2, dy = (size().h - before.h) / 2;
-  canvas.getObjects().forEach(obj => {
-    obj.set({ left: obj.left + dx, top: obj.top + dy });
-    // 세로로 바꿔서 글상자가 대지보다 넓어지면, 폭과 글자 크기를 같은 비율로 줄여 줄바꿈이 그대로 유지되게 합니다.
-    if (obj.isType('Textbox') && obj.width > size().w * 0.95) {
-      const k = (size().w * 0.85) / obj.width;
+  // 대지(A5 모드면 칸)가 바뀌어도 내용이 같은 칸의 같은 자리에 머물도록 함께 옮깁니다.
+  const after = regions();
+  objs.forEach((obj, i) => {
+    const a = before[where[i]], b = after[where[i]];
+    obj.set({ left: obj.left + (b.x + b.w / 2) - (a.x + a.w / 2), top: obj.top + (b.y + b.h / 2) - (a.y + a.h / 2) });
+    // 글상자가 칸보다 넓어지면, 폭과 글자 크기를 같은 비율로 줄여 줄바꿈이 그대로 유지되게 합니다.
+    if (obj.isType('Textbox') && obj.width > b.w * 0.95) {
+      const k = (b.w * 0.85) / obj.width;
       obj.set({ width: obj.width * k, fontSize: Math.round(obj.fontSize * k * 10) / 10 });
     }
     obj.setCoords();
   });
-  document.querySelectorAll('#orientation button').forEach(b => b.setAttribute('aria-pressed', b.dataset.o === o));
+  drawPaper();
   fit();
+  checkCut();
   scheduleSave();
 }
 document.querySelectorAll('#orientation button').forEach(b => b.addEventListener('click', () => setOrientation(b.dataset.o)));
+
+// 용지 영역의 버튼 상태를 지금 값에 맞춥니다.
+function drawPaper() {
+  document.querySelectorAll('#orientation button').forEach(b => b.setAttribute('aria-pressed', b.dataset.o === state.orientation));
+  $('a5').setAttribute('aria-pressed', state.a5);
+  $('a5-tools').hidden = !state.a5;
+  $('mirror').textContent = state.orientation === 'landscape' ? '왼쪽 내용을 오른쪽에도 넣기' : '위쪽 내용을 아래쪽에도 넣기';
+}
+
+// ── A5 두 장으로 나누기 ──
+$('a5').addEventListener('click', () => {
+  state.a5 = !state.a5;
+  drawPaper();
+  if (state.pristine) { rebuildStarter(); return; }
+  canvas.requestRenderAll();
+  checkCut();
+  scheduleSave();
+});
+
+// 첫 칸(왼쪽·위)의 내용을 두 번째 칸에 똑같이 넣습니다. 두 번째 칸에 있던 내용은 바뀝니다.
+$('mirror').addEventListener('click', async () => {
+  const [a, b] = regions();
+  const inA = o => regionIndex(o.getCenterPoint()) === 0;
+  const src = canvas.getObjects().filter(inA);
+  const old = canvas.getObjects().filter(o => !inA(o));
+  if (!src.length) { status('첫 칸에 넣을 내용이 없어요.', true); return; }
+  if (old.length && !(await ask('두 번째 칸의 내용을 지우고 첫 칸 내용으로 바꿀까요? 되돌리기로 다시 돌릴 수 있어요.', '바꾸기'))) return;
+  state.pristine = false;
+  canvas.discardActiveObject();
+  old.forEach(o => canvas.remove(o));
+  for (const o of src) {
+    const c = await o.clone(EXTRA_PROPS);
+    c.set({ left: o.left + (b.x - a.x), top: o.top + (b.y - a.y) });
+    canvas.add(c);
+  }
+  canvas.requestRenderAll();
+  checkCut();
+  scheduleSave();
+});
 
 // ── PDF 저장 ──
 function fileName() {
@@ -423,7 +681,7 @@ function fileName() {
   const texts = canvas.getObjects().filter(o => o.isType('Textbox') && o.text.trim());
   const main = texts.sort((a, b) => b.fontSize - a.fontSize)[0];
   const title = (main?.text || '출력물').replace(/\s+/g, '').replace(/[\\/:*?"<>|]/g, '').slice(0, 20);
-  return `${ymd}_${title}_A4.pdf`;
+  return `${ymd}_${title}_${state.a5 ? 'A5' : 'A4'}.pdf`;
 }
 
 $('save-pdf').addEventListener('click', async () => {
@@ -435,7 +693,7 @@ $('save-pdf').addEventListener('click', async () => {
     canvas.discardActiveObject();
     canvas.requestRenderAll();
     await ensureFonts(canvas.getObjects());
-    const bytes = await buildPdf(canvas, size());
+    const bytes = await buildPdf(canvas, size(), { cut: state.a5 ? state.orientation : null });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
     a.download = fileName();
@@ -451,16 +709,131 @@ $('save-pdf').addEventListener('click', async () => {
   }
 });
 
+// ── 작업 파일: 나중에 이어서 고칠 수 있게 지금 상태를 .json 파일로 저장하고 엽니다 ──
+// 템플릿도 같은 파일입니다. 디자이너가 저장한 작업 파일을 templates 폴더에 올리면 템플릿이 됩니다.
+const WORK_APP = 'waverock-design-editor';
+$('save-work').addEventListener('click', () => {
+  canvas.discardActiveObject();
+  canvas.requestRenderAll();
+  const doc = { app: WORK_APP, ...JSON.parse(snapshot()), pristine: false };
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(doc)], { type: 'application/json' }));
+  a.download = fileName().replace(/\.pdf$/, '.json');
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  status(`${a.download} 저장했어요. 작업 파일 열기로 이어서 고칠 수 있어요.`);
+});
+$('open-work').addEventListener('click', () => $('work-file').click());
+$('work-file').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    await openDoc(JSON.parse(await file.text()), `${file.name}을(를) 열었어요.`);
+  } catch (err) {
+    console.error(err);
+    status('이 파일은 열 수 없어요. 디자인 에디터에서 저장한 작업 파일(.json)인지 확인해 주세요.', true);
+  }
+});
+async function openDoc(doc, done) {
+  if (doc?.app !== WORK_APP || !doc.canvas) throw new Error('작업 파일이 아님');
+  await restore(JSON.stringify({ ...doc, pristine: false }));
+  record();
+  status(done);
+}
+
+// ── 템플릿 ──
+// templates/index.json 목록을 읽어 버튼으로 보여 줍니다. 목록이 비어 있으면 칸을 숨깁니다.
+(async function loadTemplates() {
+  let list = [];
+  try { list = await (await fetch('templates/index.json', { cache: 'no-cache' })).json(); } catch { return; }
+  if (!Array.isArray(list) || !list.length) return;
+  $('tpl-list').innerHTML = list.map((t, i) =>
+    `<button type="button" data-i="${i}">${t.thumb ? `<img src="templates/${encodeURI(t.thumb)}" alt="">` : ''}<span>${esc(t.name)}<small>${t.note ? esc(t.note) : ''}</small></span></button>`).join('');
+  $('tpl-sec').hidden = false;
+  $('tpl-list').addEventListener('click', async e => {
+    const b = e.target.closest('button[data-i]');
+    if (!b) return;
+    const t = list[b.dataset.i];
+    if (!state.pristine && !(await ask(`'${t.name}' 템플릿으로 바꿀까요? 지금 작업은 되돌리기로 다시 돌릴 수 있어요.`, '템플릿으로 바꾸기'))) return;
+    try {
+      const doc = await (await fetch(`templates/${encodeURI(t.file)}`, { cache: 'no-cache' })).json();
+      await openDoc(doc, `'${t.name}' 템플릿을 불러왔어요. 글을 클릭해서 고쳐 쓰세요.`);
+    } catch (err) {
+      console.error(err);
+      status('템플릿을 불러오지 못했어요.', true);
+    }
+  });
+})();
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+// ── 인스타 피드 PNG (잠긴 기능) ──
+// 제목 '디자인 에디터'를 2초 안에 5번 누르면 잠금이 풀리고, 다시 5번 누르면 잠깁니다.
+const FEED_KEY = 'wde-unlock-feed';
+const FEED = { w: 1080, h: 1350 };
+function drawFeedLock() {
+  const open = localStorage.getItem(FEED_KEY) === '1';
+  const b = $('save-feed');
+  b.setAttribute('aria-disabled', String(!open));
+  b.textContent = open ? '인스타 피드 PNG 저장 (1080×1350)' : '🔒 인스타 피드 PNG';
+  b.title = open ? '대지 전체를 4:5 피드 크기 안에 맞춰 PNG로 저장합니다.' : '아직 잠겨 있는 기능입니다.';
+}
+drawFeedLock();
+let titleTaps = [];
+$('title').addEventListener('click', () => {
+  const now = Date.now();
+  titleTaps = [...titleTaps.filter(t => now - t < 2000), now];
+  if (titleTaps.length < 5) return;
+  titleTaps = [];
+  const open = localStorage.getItem(FEED_KEY) !== '1';
+  localStorage.setItem(FEED_KEY, open ? '1' : '0');
+  drawFeedLock();
+  status(open ? '🔓 인스타 피드 PNG 기능이 열렸어요!' : '🔒 인스타 피드 PNG 기능을 다시 잠갔어요.');
+});
+$('save-feed').addEventListener('click', async () => {
+  if (localStorage.getItem(FEED_KEY) !== '1') { status('🔒 아직 잠겨 있는 기능이에요.'); return; }
+  canvas.discardActiveObject();
+  await ensureFonts(canvas.getObjects());
+  const { w, h } = size();
+  const k = Math.min(FEED.w / w, FEED.h / h);
+  const out = document.createElement('canvas');
+  out.width = FEED.w;
+  out.height = FEED.h;
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = canvas.backgroundColor || '#ffffff';
+  ctx.fillRect(0, 0, FEED.w, FEED.h);
+  hideOverlay = true;
+  const page = canvas.toCanvasElement((w * k) / canvas.width);
+  hideOverlay = false;
+  canvas.requestRenderAll();
+  ctx.drawImage(page, (FEED.w - page.width) / 2, (FEED.h - page.height) / 2);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(await new Promise(res => out.toBlob(res, 'image/png')));
+  a.download = fileName().replace(/_A[45]\.pdf$/, '_feed.png');
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  status(`${a.download} 저장했어요.`);
+});
+
+// ── 확인 창 ──
+function ask(text, okLabel) {
+  const d = $('confirm');
+  $('confirm-text').textContent = text;
+  $('confirm-ok').textContent = okLabel;
+  d.returnValue = '';
+  d.showModal();
+  return new Promise(res => d.addEventListener('close', () => res(d.returnValue === 'ok'), { once: true }));
+}
+
 // ── 새로 시작 ──
-$('reset').addEventListener('click', () => $('reset-dialog').showModal());
-$('reset-dialog').addEventListener('close', async () => {
-  if ($('reset-dialog').returnValue !== 'ok') return;
-  localStorage.removeItem(STORE);
-  canvas.clear();
+$('reset').addEventListener('click', async () => {
+  if (!(await ask('지금 작업한 내용을 모두 지우고 새로 시작할까요? 되돌리기로 다시 돌릴 수 있어요.', '지우고 새로 시작'))) return;
+  canvas.discardActiveObject();
   canvas.backgroundColor = '#ffffff';
   bgPalette.draw();
-  await starter();
-  scheduleSave();
+  await rebuildStarter();
 });
 
 // 처음 열면 보이는 예시. 지민 님이 정한 배치(261127 시안)를 대지 가운데 기준 거리로 옮겼습니다.
@@ -479,15 +852,22 @@ const STARTER = {
     { key: 'enBody', dy: 184.47, fontSize: 20, fill: '#6b6b6b' },
   ],
 };
+// A5 모드면 두 칸 모두에 칸 크기에 맞춘 예시를 넣습니다.
 async function starter() {
-  const objs = STARTER[state.orientation].map(({ key, dy, ...over }) => {
-    const t = makeText(key, size().h / 2 + dy);
-    t.set(over);
-    return t;
+  const objs = regions().flatMap(r => {
+    const tall = r.h > r.w;
+    return STARTER[tall ? 'portrait' : 'landscape'].map(({ key, dy }) => makeText(key, r, dy));
   });
   await ensureFonts(objs);
   canvas.add(...objs);
   state.pristine = true;
+}
+async function rebuildStarter() {
+  canvas.discardActiveObject();
+  canvas.remove(...canvas.getObjects());
+  await starter();
+  status('');
+  scheduleSave();
 }
 
 // ── 시작 ──
@@ -495,21 +875,16 @@ async function starter() {
   fit();
   const saved = JSON.parse(localStorage.getItem(STORE) || 'null');
   if (saved?.canvas && !saved.pristine) {
-    state.orientation = saved.orientation || 'landscape';
-    document.querySelectorAll('#orientation button').forEach(b => b.setAttribute('aria-pressed', b.dataset.o === state.orientation));
-    await canvas.loadFromJSON(saved.canvas);
-    await ensureFonts(canvas.getObjects());
-    fit();
-    bgPalette.draw();
+    await restore(JSON.stringify(saved));
   } else {
-    // 손대지 않은 예시만 있었다면 저장된 방향의 최신 예시로 다시 그립니다.
-    if (saved?.orientation) {
-      state.orientation = saved.orientation;
-      document.querySelectorAll('#orientation button').forEach(b => b.setAttribute('aria-pressed', b.dataset.o === state.orientation));
-      fit();
-    }
+    // 손대지 않은 예시만 있었다면 저장된 용지 설정으로 최신 예시를 다시 그립니다.
+    state.orientation = saved?.orientation || 'landscape';
+    state.a5 = !!saved?.a5;
+    drawPaper();
+    fit();
     await starter();
   }
   canvas.requestRenderAll();
-  window.__wde = { canvas, size }; // 확인용
+  record(); // 되돌리기의 출발점
+  window.__wde = { canvas, size, state }; // 확인용
 })();

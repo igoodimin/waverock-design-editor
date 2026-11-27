@@ -20,7 +20,8 @@ function toRgb(color) {
   return { color: rgb(r / 255, g / 255, b / 255), alpha: a };
 }
 
-export async function buildPdf(canvas, size) {
+// opts.cut: A5 두 장 모드일 때 'landscape'(세로 재단선) 또는 'portrait'(가로 재단선)
+export async function buildPdf(canvas, size, opts = {}) {
   const doc = await PDFDocument.create();
   doc.registerFontkit(window.fontkit);
   doc.setCreator('WAVEROCK 디자인 에디터');
@@ -71,7 +72,16 @@ export async function buildPdf(canvas, size) {
     if (obj.isType('Textbox', 'IText', 'Text')) drawText(page, obj, getFont(obj));
     else if (obj.isType('Image')) await drawImage(doc, page, obj);
     else if (obj.isType('Rect')) drawRect(page, obj);
+    else if (obj.isType('Path')) drawPath(page, obj);
     page.pushOperators(popGraphicsState());
+  }
+
+  // A5 재단선: 가는 회색 점선
+  if (opts.cut) {
+    const line = opts.cut === 'landscape'
+      ? { start: { x: size.w / 2, y: 0 }, end: { x: size.w / 2, y: size.h } }
+      : { start: { x: 0, y: size.h / 2 }, end: { x: size.w, y: size.h / 2 } };
+    page.drawLine({ ...line, thickness: 0.5, color: rgb(0.55, 0.55, 0.55), dashArray: [4, 3] });
   }
 
   return doc.save();
@@ -150,4 +160,12 @@ async function outlineFont(buffer) {
       return g === undefined ? '' : font.glyphToPath(g);
     },
   };
+}
+
+// 아이콘 등 도형 경로. Fabric 경로는 자기 가운데(pathOffset)를 기준으로 그려집니다.
+function drawPath(page, p) {
+  const d = p.path.map(seg => seg.join(' ')).join(' ');
+  const { color, alpha } = toRgb(p.fill);
+  page.pushOperators(concatTransformationMatrix(1, 0, 0, -1, 0, 0));
+  page.drawSvgPath(d, { x: -p.pathOffset.x, y: p.pathOffset.y, color, opacity: alpha * (p.opacity ?? 1), borderWidth: 0 });
 }
