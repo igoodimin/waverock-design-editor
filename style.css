@@ -140,5 +140,3 @@ button, input, select { font: inherit; }
 .tpl-list small { display: block; color: #888; font-size: 12px; }
 .work { margin-top: 8px; }
 #a-lock { margin-top: 8px; }
-.locked { margin-top: 8px; color: #999; }
-.locked[aria-disabled="false"] { color: inherit; }

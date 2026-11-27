@@ -19,22 +19,16 @@
   <div class="layout">
     <aside class="side">
       <section class="sec">
-        <div class="grid2">
-          <button type="button" id="undo" disabled title="되돌리기 (⌘Z)">↶ 되돌리기</button>
-          <button type="button" id="redo" disabled title="다시 하기 (⇧⌘Z)">↷ 다시 하기</button>
-        </div>
-      </section>
-
-      <section class="sec">
         <h2>용지</h2>
         <div class="seg" id="orientation">
           <button type="button" data-o="landscape" aria-pressed="true">A4 가로</button>
           <button type="button" data-o="portrait" aria-pressed="false">A4 세로</button>
         </div>
         <button type="button" class="wide" id="a5" aria-pressed="false">✂ A5 두 장으로 나누기</button>
+        <button type="button" class="wide" id="a6" aria-pressed="false">✂ A6 네 장으로 나누기</button>
         <div id="a5-tools" hidden>
           <button type="button" class="wide" id="mirror">왼쪽 내용을 오른쪽에도 넣기</button>
-          <p class="hint">A4에 인쇄한 뒤 점선을 따라 자르면 A5 두 장이 됩니다. 점선은 PDF에도 들어갑니다.</p>
+          <p class="hint" id="cut-hint">A4에 인쇄한 뒤 점선을 따라 자르면 A5 두 장이 됩니다. 점선은 PDF에도 들어갑니다.</p>
         </div>
       </section>
 
@@ -119,7 +113,6 @@
           <button type="button" id="open-work">작업 파일 열기</button>
         </div>
         <input type="file" id="work-file" accept=".json,application/json" hidden>
-        <button type="button" class="wide locked" id="save-feed" aria-disabled="true">🔒 인스타 피드 PNG</button>
         <button type="button" class="wide ghost" id="reset">새로 시작</button>
       </section>
     </aside>

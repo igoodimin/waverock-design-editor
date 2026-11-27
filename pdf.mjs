@@ -20,7 +20,7 @@ function toRgb(color) {
   return { color: rgb(r / 255, g / 255, b / 255), alpha: a };
 }
 
-// opts.cut: A5 두 장 모드일 때 'landscape'(세로 재단선) 또는 'portrait'(가로 재단선)
+// opts.cuts: 재단선 위치 { xs: 세로선 x들, ys: 가로선 y들 } (캔버스 좌표)
 export async function buildPdf(canvas, size, opts = {}) {
   const doc = await PDFDocument.create();
   doc.registerFontkit(window.fontkit);
@@ -76,13 +76,10 @@ export async function buildPdf(canvas, size, opts = {}) {
     page.pushOperators(popGraphicsState());
   }
 
-  // A5 재단선: 가는 회색 점선
-  if (opts.cut) {
-    const line = opts.cut === 'landscape'
-      ? { start: { x: size.w / 2, y: 0 }, end: { x: size.w / 2, y: size.h } }
-      : { start: { x: 0, y: size.h / 2 }, end: { x: size.w, y: size.h / 2 } };
-    page.drawLine({ ...line, thickness: 0.5, color: rgb(0.55, 0.55, 0.55), dashArray: [4, 3] });
-  }
+  // 재단선: 가는 회색 점선. 캔버스 좌표(위가 0)를 PDF 좌표(아래가 0)로 바꿔 긋습니다.
+  const cut = { thickness: 0.5, color: rgb(0.55, 0.55, 0.55), dashArray: [4, 3] };
+  (opts.cuts?.xs || []).forEach(x => page.drawLine({ ...cut, start: { x, y: 0 }, end: { x, y: size.h } }));
+  (opts.cuts?.ys || []).forEach(y => page.drawLine({ ...cut, start: { x: 0, y: size.h - y }, end: { x: size.w, y: size.h - y } }));
 
   return doc.save();
 }

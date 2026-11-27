@@ -20,13 +20,15 @@ const inkFor = (soft, bg) => (isDark(bg) ? (soft ? '#b3b3b3' : '#ffffff') : (sof
 const COLORS = ['#000000', '#ffffff', '#6b6b6b', '#d9d9d9', '#e1251b', '#ff7a00', '#ffd400', '#1f6feb', '#1a7f37'];
 
 const $ = id => document.getElementById(id);
-const state = { orientation: 'landscape', a5: false, pristine: false };
+const state = { orientation: 'landscape', a5: false, a6: false, pristine: false };
 const size = () => SIZES[state.orientation];
 
-// A5 두 장 모드면 대지를 반으로 나눈 두 칸, 아니면 대지 전체 한 칸을 돌려줍니다.
-// 가로 A4는 왼쪽·오른쪽(세로형 A5 두 장), 세로 A4는 위·아래(가로형 A5 두 장)로 나뉩니다.
+// 나누기 모드에 따라 대지를 나눈 칸들을 돌려줍니다. 나누지 않으면 대지 전체 한 칸입니다.
+// A5: 가로 A4는 왼쪽·오른쪽(세로형 A5 두 장), 세로 A4는 위·아래(가로형 A5 두 장)로 나뉩니다.
+// A6: 가로·세로를 모두 반으로 나눠 네 칸이 됩니다. 순서는 왼쪽 위, 오른쪽 위, 왼쪽 아래, 오른쪽 아래입니다.
 function regions() {
   const { w, h } = size();
+  if (state.a6) return [[0, 0], [1, 0], [0, 1], [1, 1]].map(([i, j]) => ({ x: i * w / 2, y: j * h / 2, w: w / 2, h: h / 2 }));
   if (!state.a5) return [{ x: 0, y: 0, w, h }];
   return state.orientation === 'landscape'
     ? [{ x: 0, y: 0, w: w / 2, h }, { x: w / 2, y: 0, w: w / 2, h }]
@@ -34,6 +36,12 @@ function regions() {
 }
 const regionIndex = pt => Math.max(0, regions().findIndex(r => pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h));
 const regionAt = pt => regions()[regionIndex(pt)];
+// 재단선 위치. xs는 세로선, ys는 가로선입니다.
+function cutLines() {
+  const rs = regions();
+  return { xs: [...new Set(rs.map(r => r.x).filter(x => x > 0))], ys: [...new Set(rs.map(r => r.y).filter(y => y > 0))] };
+}
+const splitName = () => (state.a6 ? 'A6' : state.a5 ? 'A5' : 'A4');
 
 // 선택 테두리와 손잡이를 툴 UI 색에 맞춥니다.
 Object.assign(InteractiveFabricObject.ownDefaults, {
@@ -79,7 +87,7 @@ let tplCanvas = null;
 const snapshot = () => {
   const c = canvas.toObject(EXTRA_PROPS);
   const untouchedTpl = tplCanvas !== null && JSON.stringify(c.objects) === tplCanvas;
-  return JSON.stringify({ v: 2, orientation: state.orientation, a5: state.a5, pristine: state.pristine, untouchedTpl, canvas: c });
+  return JSON.stringify({ v: 2, orientation: state.orientation, a5: state.a5, a6: state.a6, pristine: state.pristine, untouchedTpl, canvas: c });
 };
 const history = { stack: [], index: -1 };
 let restoring = false;
@@ -101,7 +109,6 @@ function record() {
     history.index = history.stack.length - 1;
   }
   persist(snap);
-  drawUndo();
 }
 function scheduleSave() {
   if (restoring) return;
@@ -114,10 +121,6 @@ function flushSave() {
   saveTimer = null;
   record();
 }
-function drawUndo() {
-  $('undo').disabled = history.index <= 0;
-  $('redo').disabled = history.index >= history.stack.length - 1;
-}
 
 async function restore(snap) {
   const d = JSON.parse(snap);
@@ -125,7 +128,8 @@ async function restore(snap) {
   try {
     canvas.discardActiveObject();
     state.orientation = d.orientation || 'landscape';
-    state.a5 = !!d.a5;
+    state.a6 = !!d.a6;
+    state.a5 = !state.a6 && !!d.a5;
     state.pristine = !!d.pristine;
     await canvas.loadFromJSON(d.canvas);
     canvas.getObjects().forEach(attachControls);
@@ -145,7 +149,6 @@ async function undo() {
   history.index--;
   await restore(history.stack[history.index]);
   persist(history.stack[history.index]);
-  drawUndo();
 }
 async function redo() {
   flushSave();
@@ -153,10 +156,7 @@ async function redo() {
   history.index++;
   await restore(history.stack[history.index]);
   persist(history.stack[history.index]);
-  drawUndo();
 }
-$('undo').addEventListener('click', undo);
-$('redo').addEventListener('click', redo);
 
 canvas.on('object:modified', scheduleSave);
 // 처음 예시를 아직 손대지 않았는지 기억합니다. 손대기 전이면 용지 방향을 바꿀 때 그 방향의 예시로 바꿔 보여 줍니다.
@@ -547,20 +547,19 @@ canvas.on('mouse:up', () => {
   guides.x = guides.y = null;
   canvas.requestRenderAll();
 });
-let hideOverlay = false; // 그림 파일로 내보낼 때는 재단선과 안내선을 그리지 않습니다.
 canvas.on('after:render', ({ ctx }) => {
-  if (hideOverlay) return;
   const z = canvas.getZoom();
   const { w, h } = size();
   ctx.save();
   ctx.lineWidth = 1;
-  // A5 재단선(화면 표시용)
-  if (state.a5) {
+  // 재단선(화면 표시용)
+  const cuts = cutLines();
+  if (cuts.xs.length || cuts.ys.length) {
     ctx.strokeStyle = '#8a8a8a';
     ctx.setLineDash([6, 4]);
     ctx.beginPath();
-    if (state.orientation === 'landscape') { ctx.moveTo(w / 2 * z + 0.5, 0); ctx.lineTo(w / 2 * z + 0.5, h * z); }
-    else { ctx.moveTo(0, h / 2 * z + 0.5); ctx.lineTo(w * z, h / 2 * z + 0.5); }
+    cuts.xs.forEach(x => { ctx.moveTo(x * z + 0.5, 0); ctx.lineTo(x * z + 0.5, h * z); });
+    cuts.ys.forEach(y => { ctx.moveTo(0, y * z + 0.5); ctx.lineTo(w * z, y * z + 0.5); });
     ctx.stroke();
   }
   // 가운데 안내선
@@ -578,14 +577,14 @@ canvas.on('after:render', ({ ctx }) => {
 
 // 재단선에 걸친 요소가 있으면 알려 줍니다. 자르면 그 요소가 잘립니다.
 function crossesCut(o) {
-  if (!state.a5) return false;
   const b = o.getBoundingRect();
-  const { w, h } = size();
-  return state.orientation === 'landscape' ? (b.left < w / 2 && b.left + b.width > w / 2) : (b.top < h / 2 && b.top + b.height > h / 2);
+  const { xs, ys } = cutLines();
+  const e = 0.5; // 칸에 꼭 맞춘 요소가 계산 오차로 걸쳐 보이지 않게 둡니다.
+  return xs.some(x => b.left < x - e && b.left + b.width > x + e) || ys.some(y => b.top < y - e && b.top + b.height > y + e);
 }
 function checkCut() {
   const n = canvas.getObjects().filter(crossesCut).length;
-  if (n) status(`재단선에 걸친 요소가 ${n}개 있어요. 반으로 자르면 잘립니다.`, true);
+  if (n) status(`재단선에 걸친 요소가 ${n}개 있어요. 자르면 잘립니다.`, true);
   else if ($('status').classList.contains('error') && $('status').textContent.startsWith('재단선')) status('');
 }
 canvas.on('object:modified', checkCut);
@@ -674,36 +673,79 @@ document.querySelectorAll('#orientation button').forEach(b => b.addEventListener
 function drawPaper() {
   document.querySelectorAll('#orientation button').forEach(b => b.setAttribute('aria-pressed', b.dataset.o === state.orientation));
   $('a5').setAttribute('aria-pressed', state.a5);
-  $('a5-tools').hidden = !state.a5;
-  $('mirror').textContent = state.orientation === 'landscape' ? '왼쪽 내용을 오른쪽에도 넣기' : '위쪽 내용을 아래쪽에도 넣기';
+  $('a6').setAttribute('aria-pressed', state.a6);
+  $('a5-tools').hidden = !state.a5 && !state.a6;
+  $('mirror').textContent = state.a6 ? '첫 칸 내용을 나머지 칸에도 넣기'
+    : state.orientation === 'landscape' ? '왼쪽 내용을 오른쪽에도 넣기' : '위쪽 내용을 아래쪽에도 넣기';
+  $('cut-hint').textContent = `A4에 인쇄한 뒤 점선을 따라 자르면 ${state.a6 ? 'A6 네 장' : 'A5 두 장'}이 됩니다. 점선은 PDF에도 들어갑니다.`;
 }
 
-// ── A5 두 장으로 나누기 ──
-$('a5').addEventListener('click', () => {
-  state.a5 = !state.a5;
+// ── A5 두 장 / A6 네 장으로 나누기 ──
+// 나누면 첫 칸(나누기 전에는 대지 전체)의 내용을 새 칸 크기에 맞게 줄여 모든 칸에 똑같이 넣습니다.
+// 손대지 않은 예시라면 칸 모양에 맞춘 예시로 다시 그립니다. 나누기를 끄면 내용은 그대로 둡니다.
+async function setSplit(mode) {
+  const before = regions()[0];
+  const inFirst = canvas.getObjects().filter(o => regionIndex(o.getCenterPoint()) === 0);
+  const others = canvas.getObjects().filter(o => !inFirst.includes(o));
+  state.a5 = mode === 'a5';
+  state.a6 = mode === 'a6';
   drawPaper();
-  if (state.pristine) { rebuildStarter(); return; }
+  if (state.pristine) { await rebuildStarter(); return; }
+  if (mode) {
+    const after = regions()[0];
+    canvas.discardActiveObject();
+    others.forEach(o => canvas.remove(o));
+    if (inFirst.length) {
+      // 내용 전체를 감싸는 상자가 새 칸에 꼭 맞을 만큼 줄입니다. 칸이 줄어든 비율보다 더 줄이지는 않고, 키우지도 않습니다.
+      const bs = inFirst.map(o => o.getBoundingRect());
+      const box = { x: Math.min(...bs.map(b => b.left)), y: Math.min(...bs.map(b => b.top)) };
+      box.w = Math.max(...bs.map(b => b.left + b.width)) - box.x;
+      box.h = Math.max(...bs.map(b => b.top + b.height)) - box.y;
+      const k = Math.min(1, Math.max(after.w / before.w, after.h / before.h), after.w / box.w, after.h / box.h);
+      inFirst.forEach(o => fitInto(o, box, after, k));
+    }
+    await copyFirstToOthers();
+    if (others.length) status('다른 칸에 있던 내용은 첫 칸 내용으로 바뀌었어요. ⌘Z로 되돌릴 수 있어요.');
+  }
   canvas.requestRenderAll();
   checkCut();
   scheduleSave();
-});
+}
+// 요소를 상자 a의 가운데 기준에서 칸 b의 가운데 기준으로 옮기며 k배로 줄입니다. 글상자는 글자 크기와 폭을 줄여 PDF와 화면이 같은 값을 쓰게 합니다.
+function fitInto(o, a, b, k) {
+  const c = o.getCenterPoint();
+  if (o.isType('Textbox')) o.set({ fontSize: Math.round(o.fontSize * k * 10) / 10, width: o.width * k });
+  else o.set({ scaleX: o.scaleX * k, scaleY: o.scaleY * k });
+  o.setPositionByOrigin({ x: b.x + b.w / 2 + (c.x - (a.x + a.w / 2)) * k, y: b.y + b.h / 2 + (c.y - (a.y + a.h / 2)) * k }, 'center', 'center');
+  o.setCoords();
+}
+$('a5').addEventListener('click', () => setSplit(state.a5 ? null : 'a5'));
+$('a6').addEventListener('click', () => setSplit(state.a6 ? null : 'a6'));
 
-// 첫 칸(왼쪽·위)의 내용을 두 번째 칸에 똑같이 넣습니다. 두 번째 칸에 있던 내용은 바뀝니다.
+// 첫 칸(왼쪽 위)의 내용을 나머지 칸에 똑같이 복사해 넣습니다.
+async function copyFirstToOthers() {
+  const [a, ...rest] = regions();
+  const src = canvas.getObjects().filter(o => regionIndex(o.getCenterPoint()) === 0);
+  for (const b of rest) {
+    for (const o of src) {
+      const c = await o.clone(EXTRA_PROPS);
+      c.set({ left: o.left + (b.x - a.x), top: o.top + (b.y - a.y) });
+      canvas.add(c);
+    }
+  }
+}
+
+// 첫 칸의 내용을 나머지 칸에 똑같이 넣습니다. 나머지 칸에 있던 내용은 바뀝니다.
 $('mirror').addEventListener('click', async () => {
-  const [a, b] = regions();
   const inA = o => regionIndex(o.getCenterPoint()) === 0;
   const src = canvas.getObjects().filter(inA);
   const old = canvas.getObjects().filter(o => !inA(o));
   if (!src.length) { status('첫 칸에 넣을 내용이 없어요.', true); return; }
-  if (old.length && !(await ask('두 번째 칸의 내용을 지우고 첫 칸 내용으로 바꿀까요? 되돌리기로 다시 돌릴 수 있어요.', '바꾸기'))) return;
+  if (old.length && !(await ask('나머지 칸의 내용을 지우고 첫 칸 내용으로 바꿀까요? 되돌리기(⌘Z)로 다시 돌릴 수 있어요.', '바꾸기'))) return;
   state.pristine = false;
   canvas.discardActiveObject();
   old.forEach(o => canvas.remove(o));
-  for (const o of src) {
-    const c = await o.clone(EXTRA_PROPS);
-    c.set({ left: o.left + (b.x - a.x), top: o.top + (b.y - a.y) });
-    canvas.add(c);
-  }
+  await copyFirstToOthers();
   canvas.requestRenderAll();
   checkCut();
   scheduleSave();
@@ -716,7 +758,7 @@ function fileName() {
   const texts = canvas.getObjects().filter(o => o.isType('Textbox') && o.text.trim());
   const main = texts.sort((a, b) => b.fontSize - a.fontSize)[0];
   const title = (main?.text || '출력물').replace(/\s+/g, '').replace(/[\\/:*?"<>|]/g, '').slice(0, 20);
-  return `${ymd}_${title}_${state.a5 ? 'A5' : 'A4'}.pdf`;
+  return `${ymd}_${title}_${splitName()}.pdf`;
 }
 
 $('save-pdf').addEventListener('click', async () => {
@@ -728,7 +770,7 @@ $('save-pdf').addEventListener('click', async () => {
     canvas.discardActiveObject();
     canvas.requestRenderAll();
     await ensureFonts(canvas.getObjects());
-    const bytes = await buildPdf(canvas, size(), { cut: state.a5 ? state.orientation : null });
+    const bytes = await buildPdf(canvas, size(), { cuts: cutLines() });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
     a.download = fileName();
@@ -791,7 +833,7 @@ async function openDoc(doc, done, isTemplate = false) {
     const b = e.target.closest('button[data-i]');
     if (!b) return;
     const t = list[b.dataset.i];
-    if (!state.pristine && !(await ask(`'${t.name}' 템플릿으로 바꿀까요? 지금 작업은 되돌리기로 다시 돌릴 수 있어요.`, '템플릿으로 바꾸기'))) return;
+    if (!state.pristine && !(await ask(`'${t.name}' 템플릿으로 바꿀까요? 지금 작업은 되돌리기(⌘Z)로 다시 돌릴 수 있어요.`, '템플릿으로 바꾸기'))) return;
     try {
       const doc = await (await fetch(`templates/${encodeURI(t.file)}`, { cache: 'no-cache' })).json();
       await openDoc(doc, `'${t.name}' 템플릿을 불러왔어요. 글을 클릭해서 고쳐 쓰세요.`, true);
@@ -805,54 +847,6 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
-// ── 인스타 피드 PNG (잠긴 기능) ──
-// 제목 '디자인 에디터'를 2초 안에 5번 누르면 잠금이 풀리고, 다시 5번 누르면 잠깁니다.
-const FEED_KEY = 'wde-unlock-feed';
-const FEED = { w: 1080, h: 1350 };
-function drawFeedLock() {
-  const open = localStorage.getItem(FEED_KEY) === '1';
-  const b = $('save-feed');
-  b.setAttribute('aria-disabled', String(!open));
-  b.textContent = open ? '인스타 피드 PNG 저장 (1080×1350)' : '🔒 인스타 피드 PNG';
-  b.title = open ? '대지 전체를 4:5 피드 크기 안에 맞춰 PNG로 저장합니다.' : '아직 잠겨 있는 기능입니다.';
-}
-drawFeedLock();
-let titleTaps = [];
-$('title').addEventListener('click', () => {
-  const now = Date.now();
-  titleTaps = [...titleTaps.filter(t => now - t < 2000), now];
-  if (titleTaps.length < 5) return;
-  titleTaps = [];
-  const open = localStorage.getItem(FEED_KEY) !== '1';
-  localStorage.setItem(FEED_KEY, open ? '1' : '0');
-  drawFeedLock();
-  status(open ? '🔓 인스타 피드 PNG 기능이 열렸어요!' : '🔒 인스타 피드 PNG 기능을 다시 잠갔어요.');
-});
-$('save-feed').addEventListener('click', async () => {
-  if (localStorage.getItem(FEED_KEY) !== '1') { status('🔒 아직 잠겨 있는 기능이에요.'); return; }
-  canvas.discardActiveObject();
-  await ensureFonts(canvas.getObjects());
-  const { w, h } = size();
-  const k = Math.min(FEED.w / w, FEED.h / h);
-  const out = document.createElement('canvas');
-  out.width = FEED.w;
-  out.height = FEED.h;
-  const ctx = out.getContext('2d');
-  ctx.fillStyle = canvas.backgroundColor || '#ffffff';
-  ctx.fillRect(0, 0, FEED.w, FEED.h);
-  hideOverlay = true;
-  const page = canvas.toCanvasElement((w * k) / canvas.width);
-  hideOverlay = false;
-  canvas.requestRenderAll();
-  ctx.drawImage(page, (FEED.w - page.width) / 2, (FEED.h - page.height) / 2);
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(await new Promise(res => out.toBlob(res, 'image/png')));
-  a.download = fileName().replace(/_A[45]\.pdf$/, '_feed.png');
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-  status(`${a.download} 저장했어요.`);
-});
-
 // ── 확인 창 ──
 function ask(text, okLabel) {
   const d = $('confirm');
@@ -865,7 +859,7 @@ function ask(text, okLabel) {
 
 // ── 새로 시작 ──
 $('reset').addEventListener('click', async () => {
-  if (!(await ask('지금 작업한 내용을 모두 지우고 새로 시작할까요? 되돌리기로 다시 돌릴 수 있어요.', '지우고 새로 시작'))) return;
+  if (!(await ask('지금 작업한 내용을 모두 지우고 새로 시작할까요? 되돌리기(⌘Z)로 다시 돌릴 수 있어요.', '지우고 새로 시작'))) return;
   canvas.discardActiveObject();
   canvas.backgroundColor = '#ffffff';
   bgPalette.draw();
@@ -917,7 +911,8 @@ async function rebuildStarter() {
   } else {
     // 손대지 않은 예시만 있었다면 저장된 용지 설정으로 최신 예시를 다시 그립니다.
     state.orientation = saved?.orientation || 'landscape';
-    state.a5 = !!saved?.a5;
+    state.a6 = !!saved?.a6;
+    state.a5 = !state.a6 && !!saved?.a5;
     drawPaper();
     fit();
     await starter();
