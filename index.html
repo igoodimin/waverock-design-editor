@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WAVEROCK · 디자인 에디터</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pretendard/1.3.9/static/pretendard.min.css">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://igoodimin.github.io/waverock-design-tools/ui.css">
+  <script src="vendor/pdf-lib.min.js"></script>
+  <script src="vendor/fontkit.umd.min.js"></script>
+</head>
+<body>
+  <header class="wr-header">
+    <a class="wr-home" href="https://igoodimin.github.io/waverock-design-tools/">← 디자인 툴</a>
+    <h1 id="title">디자인 에디터</h1>
+  </header>
+
+  <div class="layout">
+    <aside class="side">
+      <section class="sec">
+        <h2>용지</h2>
+        <div class="seg" id="orientation">
+          <button type="button" data-o="landscape" aria-pressed="true">A4 가로</button>
+          <button type="button" data-o="portrait" aria-pressed="false">A4 세로</button>
+        </div>
+      </section>
+
+      <section class="sec">
+        <h2>추가</h2>
+        <div class="grid2" id="add-text">
+          <button type="button" data-preset="title">제목</button>
+          <button type="button" data-preset="body">본문</button>
+          <button type="button" data-preset="enTitle">영문 강조</button>
+          <button type="button" data-preset="enBody">영문 설명</button>
+        </div>
+        <button type="button" class="wide" id="add-image">＋ 사진 올리기</button>
+        <input type="file" id="image-file" accept="image/png,image/jpeg,image/webp" hidden>
+      </section>
+
+      <section class="sec" id="props" hidden>
+        <h2>선택한 요소</h2>
+        <div id="text-props" class="stack">
+          <label class="field">글꼴
+            <select id="p-font"></select>
+          </label>
+          <label class="field">굵기
+            <select id="p-weight"></select>
+          </label>
+          <div class="grid2">
+            <label class="field">크기(pt)
+              <input id="p-size" type="number" min="4" max="400" step="1">
+            </label>
+            <label class="field">줄 간격
+              <input id="p-line" type="number" min="0.8" max="3" step="0.05">
+            </label>
+          </div>
+          <div class="field">정렬
+            <div class="seg" id="p-align">
+              <button type="button" data-a="left" aria-pressed="false">왼쪽</button>
+              <button type="button" data-a="center" aria-pressed="false">가운데</button>
+              <button type="button" data-a="right" aria-pressed="false">오른쪽</button>
+            </div>
+          </div>
+          <div class="field">글자 색
+            <div class="palette" id="p-color"></div>
+          </div>
+        </div>
+        <div class="field obj-center">대지 가운데 맞춤
+          <div class="grid2">
+            <button type="button" id="c-x">가로 가운데</button>
+            <button type="button" id="c-y">세로 가운데</button>
+          </div>
+        </div>
+        <div class="grid2 obj-actions">
+          <button type="button" id="a-front">앞으로</button>
+          <button type="button" id="a-back">뒤로</button>
+          <button type="button" id="a-dup">복제</button>
+          <button type="button" id="a-del" class="danger">삭제</button>
+        </div>
+      </section>
+
+      <section class="sec">
+        <h2>배경 색</h2>
+        <div class="palette" id="bg-color"></div>
+      </section>
+
+      <section class="sec">
+        <h2>저장</h2>
+        <button type="button" class="wide primary" id="save-pdf">PDF 저장</button>
+        <p class="hint" id="save-hint">A4 · 글자는 벡터로 저장돼 인쇄해도 선명합니다.</p>
+        <button type="button" class="wide ghost" id="reset">새로 시작</button>
+      </section>
+    </aside>
+
+    <main class="main" id="main">
+      <div class="page" id="page">
+        <canvas id="canvas"></canvas>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </main>
+  </div>
+
+  <dialog class="confirm" id="reset-dialog">
+    <form method="dialog">
+      <p>지금 작업한 내용을 모두 지우고 새로 시작할까요?<br>지운 내용은 되돌릴 수 없습니다.</p>
+      <div class="grid2">
+        <button value="cancel">취소</button>
+        <button value="ok" class="danger">지우고 새로 시작</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="app.mjs"></script>
+</body>
+</html>
