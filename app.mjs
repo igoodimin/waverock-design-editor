@@ -74,7 +74,13 @@ async function ensureFonts(objs) {
 
 // ── 자동 저장과 되돌리기 ──
 // 작업 상태 전체(용지, A5 여부, 요소)를 글자로 묶어 브라우저에 저장하고, 되돌리기 기록에도 씁니다.
-const snapshot = () => JSON.stringify({ v: 2, orientation: state.orientation, a5: state.a5, pristine: state.pristine, canvas: canvas.toObject(EXTRA_PROPS) });
+// 템플릿을 불러온 직후의 요소들. 손대지 않은 템플릿은 작업으로 치지 않아, 다음에 열면 예시 화면이 나옵니다.
+let tplCanvas = null;
+const snapshot = () => {
+  const c = canvas.toObject(EXTRA_PROPS);
+  const untouchedTpl = tplCanvas !== null && JSON.stringify(c.objects) === tplCanvas;
+  return JSON.stringify({ v: 2, orientation: state.orientation, a5: state.a5, pristine: state.pristine, untouchedTpl, canvas: c });
+};
 const history = { stack: [], index: -1 };
 let restoring = false;
 let saveTimer;
@@ -764,9 +770,10 @@ $('work-file').addEventListener('change', async e => {
     status('이 파일은 열 수 없어요. 디자인 에디터에서 저장한 작업 파일(.json)인지 확인해 주세요.', true);
   }
 });
-async function openDoc(doc, done) {
+async function openDoc(doc, done, isTemplate = false) {
   if (doc?.app !== WORK_APP || !doc.canvas) throw new Error('작업 파일이 아님');
   await restore(JSON.stringify({ ...doc, pristine: false }));
+  tplCanvas = isTemplate ? JSON.stringify(canvas.toObject(EXTRA_PROPS).objects) : null;
   record();
   status(done);
 }
@@ -787,7 +794,7 @@ async function openDoc(doc, done) {
     if (!state.pristine && !(await ask(`'${t.name}' 템플릿으로 바꿀까요? 지금 작업은 되돌리기로 다시 돌릴 수 있어요.`, '템플릿으로 바꾸기'))) return;
     try {
       const doc = await (await fetch(`templates/${encodeURI(t.file)}`, { cache: 'no-cache' })).json();
-      await openDoc(doc, `'${t.name}' 템플릿을 불러왔어요. 글을 클릭해서 고쳐 쓰세요.`);
+      await openDoc(doc, `'${t.name}' 템플릿을 불러왔어요. 글을 클릭해서 고쳐 쓰세요.`, true);
     } catch (err) {
       console.error(err);
       status('템플릿을 불러오지 못했어요.', true);
@@ -892,6 +899,7 @@ async function starter() {
   state.pristine = true;
 }
 async function rebuildStarter() {
+  tplCanvas = null;
   canvas.discardActiveObject();
   canvas.remove(...canvas.getObjects());
   await starter();
@@ -903,7 +911,8 @@ async function rebuildStarter() {
 (async function init() {
   fit();
   const saved = JSON.parse(localStorage.getItem(STORE) || 'null');
-  if (saved?.canvas && !saved.pristine) {
+  // 손대지 않은 예시나 템플릿만 있었다면 예시 화면으로 시작합니다. 직접 작업한 내용이 있으면 그 내용을 엽니다.
+  if (saved?.canvas && !saved.pristine && !saved.untouchedTpl) {
     await restore(JSON.stringify(saved));
   } else {
     // 손대지 않은 예시만 있었다면 저장된 용지 설정으로 최신 예시를 다시 그립니다.
